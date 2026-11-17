@@ -1,0 +1,333 @@
+---
+title: "Credit Risk Classification"
+subtitle: "A comparative study of preprocessing strategies and machine learning models"
+author: "Natalia Jona"
+date: "2026-06-28"
+lang: en
+format:
+  html:
+    theme:
+      light: flatly
+      dark: darkly
+    toc: true
+    toc-depth: 3
+    code-fold: show
+    code-tools: true
+    df-print: paged
+    embed-resources: true
+execute:
+  message: false
+  warning: false
+---
+
+## Overview
+
+This project explores **binary credit risk classification** using the `credit_data` dataset from the R package `modeldata`. The goal is to predict whether a customer belongs to the `bad` or `good` credit status class.
+
+The study compares **logistic regression** and **Random Forest** under three preprocessing strategies, for a total of six model configurations. Beyond overall accuracy, the analysis considers how effectively the models identify customers in the higher-risk (`bad`) class.
+
+## Libraries
+
+The analysis uses the R tidyverse and tidymodels ecosystem for data exploration, preprocessing, resampling, model fitting and evaluation.
+
+```{r, message=FALSE}
+#| label: load-packages
+
+library(tidyverse)
+library(broom)
+library(modeldata)
+library(skimr)
+library(vip)
+
+library(rsample)
+library(recipes)
+library(parsnip)
+library(workflows)
+library(workflowsets)
+library(dials)
+library(tune)
+library(yardstick)
+
+# silniki modeli wykorzystane w workflow_set:
+library(ranger)
+library(glmnet)
+```
+
+## Dataset Overview
+
+The dataset contains **4,454 observations**. Initial inspection provides an overview of feature types and data completeness.
+
+```{r}
+data(credit_data)
+skim(credit_data)
+```
+
+### Data Preview
+
+```{r}
+credit_data
+```
+
+### Missing-Value Assessment
+
+Several variables contain missing values, particularly `Income`. Instead of discarding incomplete records, missing-value handling is included in the model recipes.
+
+```{r}
+colSums(is.na(credit_data))
+cat("Rows with at least one missing value:", 
+    sum(rowSums(is.na(credit_data)) > 0), "\n")
+```
+
+### Target Distribution
+
+The target variable `Status` contains **1,254 `bad`** and **3,200 `good`** observations. This class imbalance makes accuracy alone an incomplete performance measure.
+
+In `yardstick`, the first factor level (`bad`) is treated as the event by default. Accordingly, sensitivity measures the detection of `bad` cases, while specificity measures the correct recognition of `good` cases.
+
+```{r}
+table(credit_data$Status)
+prop.table(table(credit_data$Status)) %>% round(3)
+levels(credit_data$Status)
+```
+
+## Training and Test Sets
+
+A **70/30 stratified split** preserves the distribution of `Status` across the training and held-out test sets.
+
+```{r}
+set.seed(347793)
+podzial <- initial_split(credit_data, prop = 0.70, strata = Status)
+
+train_data <- training(podzial)
+test_data  <- testing(podzial)
+
+cat("Training set:", nrow(train_data), "obserwacji\n")
+cat("Test set:   ", nrow(test_data), "obserwacji\n")
+
+cat("\nStatus proportions (training):\n")
+print(prop.table(table(train_data$Status)) %>% round(3))
+cat("\nStatus proportions (test):\n")
+print(prop.table(table(test_data$Status)) %>% round(3))
+```
+
+## Preprocessing
+
+Three strategies are compared:
+
+- **Recipe 1:** Imputation, dummy encoding and normalization using all predictors.
+- **Recipe 2:** The same general inputs plus financial ratios, grouping of infrequent categorical levels and removal of highly correlated numeric features.
+- **Recipe 3:** A reduced, domain-motivated selection of predictors.
+
+Defining these operations in `recipes` allows preprocessing to be estimated within each training fold.
+
+```{r}
+# Przepis 1: wszystkie zmienne, "standardowe" przygotowanie danych
+# (imputacja braków, kodowanie zmiennych kategorycznych, standaryzacja)
+rec_1 <- recipe(Status ~ ., data = train_data) %>%
+  step_impute_median(all_numeric_predictors()) %>%
+  step_impute_mode(all_nominal_predictors()) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_normalize(all_numeric_predictors())
+
+# Przepis 2: wszystkie zmienne + dodatkowe zmienne pochodne 
+# (wskaźniki finansowe: zadłużenie/dochód, majątek/dochód, kwota/dochód),
+# rzadkie poziomy zmiennych kategorycznych grupowane w "pozostałe",
+# a silnie skorelowane zmienne liczbowe usuwane
+rec_2 <- recipe(Status ~ ., data = train_data) %>%
+  step_impute_median(all_numeric_predictors()) %>%
+  step_impute_mode(all_nominal_predictors()) %>%
+  step_mutate(
+    Debt_Income   = Debt / (Income + 1),
+    Assets_Income = Assets / (Income + 1),
+    Amount_Income = Amount / (Income + 1)
+  ) %>%
+  step_other(Home, Marital, Job, threshold = 0.05, other = "pozostale") %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  step_corr(all_numeric_predictors(), threshold = 0.9)
+
+# Przepis 3: ograniczony, "ekspercki" zestaw zmiennych - tylko te, które
+# intuicyjnie powinny mieć największe znaczenie dla oceny zdolności kredytowej
+rec_3 <- recipe(Status ~ Seniority + Home + Records + Job + Income + Assets + Debt + Amount,
+                data = train_data) %>%
+  step_impute_median(all_numeric_predictors()) %>%
+  step_impute_mode(all_nominal_predictors()) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_normalize(all_numeric_predictors())
+```
+
+## Model Specifications
+
+The analysis compares a Random Forest classifier (`ranger`) and logistic regression (`glm`).
+
+```{r}
+model_rf <- rand_forest() %>%
+  set_engine("ranger", seed = 347793, importance = "permutation") %>%
+  set_mode("classification")
+
+model_log <- logistic_reg() %>%
+  set_engine("glm") %>%
+  set_mode("classification")
+```
+
+### Candidate Workflows
+
+The three recipes and two model specifications are combined into **six workflows** for consistent comparison.
+
+```{r}
+zestaw_workflow <- workflow_set(
+  preproc = list(rec_1 = rec_1, rec_2 = rec_2, rec_3 = rec_3),
+  models  = list(model_rf = model_rf, model_log = model_log),
+  cross   = TRUE
+)
+zestaw_workflow
+```
+
+## Cross-Validation
+
+Five-fold stratified cross-validation is used on the training set to evaluate the candidate workflows.
+
+```{r}
+#| label: cross-validation-folds
+
+set.seed(347793)
+foldy <- vfold_cv(train_data, v = 5, strata = Status)
+foldy
+```
+
+### Model Training
+
+The workflows are evaluated using accuracy, ROC AUC, sensitivity and specificity. Particular attention is given to sensitivity for the `bad` class, since missed high-risk cases may be consequential in a lending context.
+
+```{r}
+#| label: train-candidate-models
+#| cache: true
+
+zbior_metryk <- metric_set(accuracy, roc_auc, sens, spec)
+
+set.seed(347793)
+wyniki_cv <- zestaw_workflow %>%
+  workflow_map(
+    "fit_resamples",
+    resamples = foldy,
+    metrics   = zbior_metryk,
+    control   = control_resamples(save_pred = TRUE),
+    seed      = 347793,
+    verbose   = TRUE
+  )
+```
+
+### Cross-Validation Results
+
+The recorded results indicate that **`rec_1_model_log`** has the highest accuracy (approximately **0.796**), while **`rec_2_model_rf`** has the highest ROC AUC (approximately **0.834**). The top AUC scores are very close.
+
+For the accuracy-leading model, sensitivity for `bad` customers is approximately **0.50**, versus specificity of approximately **0.91**. This illustrates why selecting a credit risk classifier solely on accuracy can be misleading.
+
+These values refer to the original run and should be checked again if the experiment is rerun with different settings.
+
+## Held-Out Test Evaluation
+
+The highest-ranked workflow by cross-validation accuracy is refitted and evaluated on the test set, which was not used to compare candidate workflows.
+
+```{r}
+tabela_wynikow <- collect_metrics(wyniki_cv) %>%
+  select(wflow_id, .metric, mean, std_err) %>%
+  pivot_wider(names_from = .metric, values_from = c(mean, std_err)) %>%
+  arrange(desc(mean_accuracy))
+
+tabela_wynikow
+```
+
+### Confusion Matrix
+
+The confusion matrix helps distinguish the different types of classification errors, especially high-risk customers classified as `good`.
+
+```{r}
+najlepszy_id <- rank_results(wyniki_cv, rank_metric = "accuracy", select_best = FALSE) %>%
+  filter(.metric == "accuracy") %>%
+  arrange(rank) %>%
+  slice(1) %>%
+  pull(wflow_id)
+
+najlepszy_id
+
+najlepszy_workflow <- extract_workflow(wyniki_cv, najlepszy_id)
+
+set.seed(347793)
+finalny_fit <- last_fit(najlepszy_workflow, split = podzial,
+                         metrics = metric_set(accuracy, roc_auc, sens, spec))
+
+cat("--- Test set metrics ---\n")
+collect_metrics(finalny_fit)
+```
+
+## Feature Importance
+
+The best Random Forest and logistic regression configurations are selected by cross-validation accuracy and refitted to the training set to examine influential predictors.
+
+```{r}
+predykcje_testowe <- collect_predictions(finalny_fit)
+
+cat("--- Test set confusion matrix ---\n")
+conf_mat(predykcje_testowe, truth = Status, estimate = .pred_class)
+```
+
+### Selecting Models for Interpretation
+
+The top-performing configuration from each model family is selected using cross-validation accuracy.
+
+```{r}
+# najlepszy model Random Forest oraz najlepszy model regresji logistycznej
+# (wg dokładności w kroswalidacji)
+najlepszy_rf_id  <- collect_metrics(wyniki_cv) %>% 
+  filter(.metric == "accuracy", str_detect(wflow_id, "model_rf")) %>% 
+  arrange(desc(mean)) %>% slice(1) %>% pull(wflow_id)
+
+najlepszy_log_id <- collect_metrics(wyniki_cv) %>% 
+  filter(.metric == "accuracy", str_detect(wflow_id, "model_log")) %>% 
+  arrange(desc(mean)) %>% slice(1) %>% pull(wflow_id)
+
+cat("Best Random Forest: ", najlepszy_rf_id,  "\n")
+cat("Best logistic regression: ", najlepszy_log_id, "\n")
+
+wf_rf  <- extract_workflow(wyniki_cv, najlepszy_rf_id)
+wf_log <- extract_workflow(wyniki_cv, najlepszy_log_id)
+
+set.seed(347793)
+fit_rf  <- fit(wf_rf,  data = train_data)
+set.seed(347793)
+fit_log <- fit(wf_log, data = train_data)
+```
+
+### Importance Plots
+
+The plots provide model-specific views of feature importance. Their values should not be interpreted as directly comparable across algorithms.
+
+```{r}
+#| fig-width: 11
+#| fig-height: 6
+
+library(patchwork)
+
+p_rf <- vip(extract_fit_parsnip(fit_rf), num_features = 10, geom = "col") +
+  labs(title = "Feature importance - Random Forest", subtitle = najlepszy_rf_id) +
+  theme_minimal()
+
+p_log <- vip(extract_fit_parsnip(fit_log), num_features = 10, geom = "col") +
+  labs(title = "Feature importance - Logistic Regression", subtitle = najlepszy_log_id) +
+  theme_minimal()
+
+p_rf + p_log
+```
+
+## Discussion
+
+The original analysis identifies **employment seniority, previous credit records, income and loan amount** among the influential predictors. Rankings differ across models.
+
+The results illustrate that high ROC AUC does not necessarily imply high sensitivity at the default classification threshold. Class weighting, threshold adjustment and additional validation are possible future directions, **not experiments performed here**.
+
+## Limitations and Reproducibility
+
+This is an **educational modelling study**, not a validated credit decision system. The dataset is loaded from `modeldata`; no external CSV is required.
+
+**Before publication:** The original code uses `347793` (a student identifier) as its random seed. It has been preserved to avoid changing the recorded experiment. Replace it with a neutral seed, rerun the analysis, and update reported values if they change.
