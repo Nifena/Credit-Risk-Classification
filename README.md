@@ -1,92 +1,87 @@
 # Credit Risk Classification
 
-**Binary classification in R using tidymodels and Quarto**
+**Binary credit-risk classification in R with tidymodels and Quarto**
 
-This project compares logistic regression and Random Forest models for predicting credit status (`bad` vs. `good`). It examines whether different preprocessing strategies affect predictive performance and highlights the importance of evaluating errors for the higher-risk class—not just overall accuracy.
+This educational project compares logistic regression and Random Forest models for classifying credit status (`bad` or `good`). It also examines how three preprocessing strategies affect model performance on the `credit_data` dataset supplied by the R package [`modeldata`](https://cran.r-project.org/package=modeldata).
 
-**[View the HTML report](docs/index.html)** · [Explore the Quarto source](credit_risk_classification.qmd)
-
-> Once GitHub Pages is enabled, the HTML report can also be viewed directly in a browser through the repository's published website.
+**[View the rendered report](index.html)** · [Read the Quarto source](credit_risk_classification.qmd)
 
 ## Dataset
 
-The analysis uses `credit_data` from the R [`modeldata`](https://cran.r-project.org/package=modeldata) package. The dataset contains **4,454 observations** with a binary outcome variable, `Status`:
+The analysis uses `modeldata::credit_data`; no external data file is required. The dataset has **4,454 observations** and a binary `Status` outcome:
 
 | Credit status | Observations |
 | --- | ---: |
 | `good` | 3,200 |
 | `bad` | 1,254 |
 
-Predictors describe financial and personal characteristics, including income, assets, debt, loan amount, employment seniority, and credit records. The dataset is loaded directly from the R package; no external CSV is required.
+Predictors include financial and personal characteristics such as income, assets, debt, loan amount, employment seniority, and credit records. Some variables contain missing values, which are handled within the preprocessing recipes.
 
 ## Methodology
 
-1. **Data exploration:** Inspect variable types, missing values, and class distribution.
-2. **Train/test split:** Create a stratified 70% training / 30% test split.
-3. **Preprocessing:** Compare three `recipes` pipelines:
-   - **Recipe 1:** Missing-value imputation, categorical encoding, and numeric normalization.
-   - **Recipe 2:** Additional financial ratios, rare-category grouping, and correlation filtering.
-   - **Recipe 3:** A smaller, domain-motivated predictor subset.
-4. **Modelling:** Evaluate logistic regression (`glm`) and Random Forest (`ranger`) across all three recipes, producing **six workflows**.
-5. **Validation:** Compare workflows using **5-fold stratified cross-validation**, with accuracy, ROC AUC, sensitivity, and specificity.
-6. **Final evaluation:** Fit the accuracy-leading workflow and evaluate it on the held-out test set; examine a confusion matrix and model-specific feature importance.
+1. Explore variable types, missing values, and the target-class distribution.
+2. Make a stratified 70/30 training/test split.
+3. Compare three `recipes` preprocessing strategies: imputation and standard encoding; engineered financial ratios, rare-category grouping, and correlation filtering; and a reduced domain-motivated predictor set.
+4. Combine the three recipes with logistic regression (`glm`) and Random Forest (`ranger`) to create six workflows.
+5. Compare workflows with 5-fold stratified cross-validation using accuracy, ROC AUC, sensitivity, and specificity.
+6. Evaluate the accuracy-leading workflow on the held-out test set and inspect its confusion matrix. The report also compares model-specific feature-importance plots.
+
+Preprocessing is defined with `recipes`, so recipe steps are estimated within resampling rather than applied to the full dataset before cross-validation.
 
 ## Results
 
-The original cross-validation analysis reported the following leading configurations:
+The following are **previously recorded cross-validation results**, not guaranteed results from every rerun or independent test-set scores:
 
 | Selection metric | Leading workflow | Approximate CV score |
 | --- | --- | ---: |
-| Accuracy | `rec_1_model_log` | **0.796** |
-| ROC AUC | `rec_2_model_rf` | **0.834** |
+| Accuracy | `rec_1_model_log` | 0.796 |
+| ROC AUC | `rec_2_model_rf` | 0.834 |
 
-For the accuracy-leading model, sensitivity for the `bad` class was approximately **0.50**, compared with specificity of approximately **0.91**. This illustrates the trade-off between overall accuracy and identifying higher-risk customers.
+For the accuracy-leading model, previously recorded sensitivity for the `bad` class was approximately **0.50**, compared with specificity of approximately **0.91**. This illustrates why overall accuracy alone may not be sufficient for credit-risk use. The rendered report calculates held-out test metrics separately when it is rendered.
 
-These are cross-validation results from the original analysis, **not independent test-set scores**. The rendered report contains the full evaluation, including held-out test metrics and a confusion matrix.
+## Requirements and running the analysis
 
-## Tools
+You need [R](https://www.r-project.org/) and [Quarto](https://quarto.org/docs/get-started/).
 
-- **R** — analysis and model development
-- **tidymodels** (`recipes`, `parsnip`, `rsample`, `workflows`, `workflowsets`, `tune`, `yardstick`) — preprocessing, modelling, and evaluation
-- **ranger** and **glm** — classification algorithms
-- **tidyverse**, **skimr**, **vip**, **patchwork** — exploration and visualisation
-- **Quarto** — reproducible HTML report
-
-## Run locally
-
-Install R and Quarto, then install the required R packages from the repository directory:
+Install the R packages used by the analysis from an R console:
 
 ```r
-source("install_packages.R")
+install.packages(c(
+  "tidyverse", "broom", "modeldata", "skimr", "vip",
+  "rsample", "recipes", "parsnip", "workflows", "workflowsets",
+  "dials", "tune", "yardstick", "ranger", "glmnet", "patchwork"
+))
 ```
 
-Render the report in RStudio or run this command in a terminal:
+From the repository directory, render the report:
 
 ```bash
 quarto render credit_risk_classification.qmd
 ```
 
-Open the generated `credit_risk_classification.html` in a web browser. Rendering the report reruns the analysis and may take some time because it evaluates multiple models using cross-validation.
+Quarto writes `credit_risk_classification.html` by default. To render directly to the repository's current report path, use:
+
+```bash
+quarto render credit_risk_classification.qmd --output index.html
+```
+
+Rendering reruns the analysis, including cross-validation, and may take some time. The committed `index.html` is a rendered report snapshot; rerender it after changing the Quarto source if you want the snapshot to reflect those changes.
 
 ## Repository structure
 
 ```text
-credit-risk-classification/
+.
 ├── README.md
-├── credit_risk_classification.qmd
-├── install_packages.R
-├── requirements.txt           # Informational list of R packages
-├── .gitignore
-└── docs/
-    └── index.html            # Rendered Quarto report for GitHub Pages
+├── credit_risk_classification.qmd  # Analysis source and report content
+└── index.html                      # Rendered report snapshot
 ```
 
-To publish the report, copy the generated HTML to `docs/index.html`, then enable GitHub Pages from the `main` branch and `/docs` folder in the repository settings. The Quarto source is configured to embed its resources into the HTML output.
+The repository currently has no `docs/` directory, `install_packages.R`, or `requirements.txt`. The report link above points to the tracked `index.html`. GitHub Pages is not configured in the repository at present; if you enable it, configure the publishing source to match the location of the rendered `index.html`.
 
 ## Limitations
 
-This is an educational classification study, **not a production credit-scoring system**. The dataset is a sample dataset, and the analysis does not establish model fairness, probability calibration, or generalisability to other populations. Threshold tuning and cost-sensitive evaluation would be valuable next steps but were not performed in this project.
+This is an educational modelling study, **not a production credit-scoring system**. The sample dataset and analysis do not establish model fairness, probability calibration, or suitability for real lending decisions. The recorded cross-validation scores should be reproduced and reviewed before being relied on; in particular, the relatively low sensitivity for `bad` cases deserves attention. Consider threshold selection, class imbalance, calibration, fairness, and additional validation before any real-world application.
 
 ## Author
 
-**Natalia Jona**
+Natalia Jona
